@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 
 from .data.encoding import (
     check_conditions,
+    constrained_decode,
     decode_date,
     DAY_TOKENS,
     MONTH_TOKENS,
@@ -25,6 +26,7 @@ def evaluate_csr(
     generator_fn: GeneratorFn,
     loader: DataLoader,
     device: torch.device,
+    constrained: bool = False,
 ) -> dict[str, float]:
     """Compute Condition Satisfaction Rates on a DataLoader.
 
@@ -33,10 +35,13 @@ def evaluate_csr(
                       on *device* and returns a date tensor (N, 41).
         loader:       DataLoader yielding (cond, date) batches.
         device:       target device for inference.
+        constrained:  if True, use constrained_decode to enforce the weekday
+                      condition at inference time.
 
     Returns:
         Dict with keys 'day', 'month', 'leap', 'decade', 'all', each in [0, 1].
     """
+    decode_fn = constrained_decode if constrained else decode_date
     counts: dict[str, int] = {"day": 0, "month": 0, "leap": 0, "decade": 0, "all": 0}
     total = 0
 
@@ -57,7 +62,7 @@ def evaluate_csr(
                 decade = str(int(ci[_LEAP_END:].argmax().item()) + DECADE_MIN)
 
                 try:
-                    date_str = decode_date(ci, fi)
+                    date_str = decode_fn(ci, fi)
                     result   = check_conditions(date_str, day, month, leap, decade)
                     for k in counts:
                         if result[k]:
