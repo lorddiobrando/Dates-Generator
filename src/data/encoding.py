@@ -87,6 +87,44 @@ def decode_date(cond: torch.Tensor, date_vec: torch.Tensor) -> str:
     return f"{day_of_month:02d}-{month:02d}-{year:04d}"
 
 
+def constrained_decode(cond: torch.Tensor, date_vec: torch.Tensor) -> str:
+    """Decode a date while enforcing the weekday condition.
+
+    Enumerates all 310 (day_of_month x year_in_decade) combinations, discards
+    any that produce the wrong weekday or are calendar-invalid, then returns the
+    combination with the highest joint probability.  Falls back to unconstrained
+    decode if no valid combination exists (should not happen in practice).
+    """
+    target_weekday = int(cond[:_DAY_END].argmax().item())       # 0=MON … 6=SUN
+    month          = int(cond[_DAY_END:_MONTH_END].argmax().item()) + 1
+    decade         = int(cond[_LEAP_END:].argmax().item()) + DECADE_MIN
+
+    dom_probs = date_vec[:DAY_OF_MONTH_DIM]   # (31,) — probability per day-of-month
+    yid_probs = date_vec[DAY_OF_MONTH_DIM:]   # (10,) — probability per year-in-decade
+
+    best_score: float = -1.0
+    best_date:  str | None = None
+
+    for yid in range(YEAR_IN_DECADE_DIM):
+        year = decade * 10 + yid
+        for dom in range(DAY_OF_MONTH_DIM):
+            day_of_month = dom + 1
+            try:
+                d = date(year, month, day_of_month)
+            except ValueError:
+                continue                          # calendar-invalid (e.g. Feb 30)
+
+            if d.weekday() != target_weekday:
+                continue                          # wrong weekday — skip
+
+            score = dom_probs[dom].item() * yid_probs[yid].item()
+            if score > best_score:
+                best_score = score
+                best_date  = f"{day_of_month:02d}-{month:02d}-{year:04d}"
+
+    return best_date if best_date is not None else decode_date(cond, date_vec)
+
+
 def parse_conditions(line: str) -> Tuple[str, str, str, str]:
     """Parse a conditions-only line: '[MON] [DEC] [False] [196]'."""
     tokens = line.strip().split()
