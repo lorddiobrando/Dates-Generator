@@ -26,6 +26,7 @@ from src.data.encoding import (
     _DAY_END,
     _LEAP_END,
     _MONTH_END,
+    constrained_decode,
     decode_date,
     encode_conditions,
     parse_conditions,
@@ -97,8 +98,10 @@ def main() -> None:
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--data",       default="data/data.txt",          help="Full dataset for test-set CSR")
     parser.add_argument("--input",      default="data/example_input.txt", help="Conditions file to generate from")
-    parser.add_argument("--output-dir", default="output")
-    parser.add_argument("--seed",       type=int, default=42)
+    parser.add_argument("--output-dir",  default="output")
+    parser.add_argument("--seed",        type=int, default=42)
+    parser.add_argument("--constrained", action="store_true",
+                        help="Enforce weekday condition via constrained decoding")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -110,9 +113,10 @@ def main() -> None:
 
     # ── Test-set CSR ─────────────────────────────────────────────────────────
     _, _, test_loader = make_loaders(args.data, batch_size=256, seed=args.seed)
-    csr = evaluate_csr(gen_fn, test_loader, device)
+    csr = evaluate_csr(gen_fn, test_loader, device, constrained=args.constrained)
 
-    print("\n=== Test-Set Condition Satisfaction Rates ===")
+    mode = "constrained" if args.constrained else "unconstrained"
+    print(f"\n=== Test-Set Condition Satisfaction Rates ({mode}) ===")
     for k, v in csr.items():
         print(f"  {k:<8} {v*100:6.2f}%")
 
@@ -128,9 +132,10 @@ def main() -> None:
         cond_t = encode_conditions(day, month, leap, decade).unsqueeze(0).to(device)
         with torch.no_grad():
             date_t = gen_fn(cond_t)
-        date_str = decode_date(cond_t[0].cpu(), date_t[0].cpu())
+        decode_fn = constrained_decode if args.constrained else decode_date
+        date_str  = decode_fn(cond_t[0].cpu(), date_t[0].cpu())
         results.append(date_str)
-        print(f"  {line}  →  {date_str}")
+        print(f"  {line}  ->  {date_str}")
 
     out_dir  = Path(args.output_dir)
     out_dir.mkdir(exist_ok=True)
