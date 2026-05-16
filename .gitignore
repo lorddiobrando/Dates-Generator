@@ -29,3 +29,11 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Claude Code internals
+.claude/
+
+# Report artefacts (generated locally via generate_report.py)
+report.pdf
+report_figures/
+generate_report.py
