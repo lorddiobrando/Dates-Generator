@@ -18,7 +18,7 @@ from typing import Callable
 
 import torch
 
-from src.data.dataset import make_loaders
+from src.data.dataset import make_loaders, make_loaders_joint
 from src.data.encoding import (
     DAY_TOKENS,
     DECADE_MIN,
@@ -28,10 +28,12 @@ from src.data.encoding import (
     _MONTH_END,
     constrained_decode,
     decode_date,
+    decode_joint,
+    build_calendar_mask,
     encode_conditions,
     parse_conditions,
 )
-from src.utils import evaluate_csr
+from src.utils import evaluate_csr, evaluate_csr_joint
 
 GeneratorFn = Callable[[torch.Tensor], torch.Tensor]
 
@@ -63,6 +65,12 @@ def _load_model(model_name: str, checkpoint: str, device: torch.device):
         m.load_state_dict(ckpt["G_AB"])
         return m
 
+    if model_name == "cyclegan-joint":
+        from src.models.cyclegan_joint import JointGeneratorAB
+        m = JointGeneratorAB().to(device)
+        m.load_state_dict(ckpt["G_AB"])
+        return m
+
     raise ValueError(f"Unknown model: {model_name}")
 
 
@@ -80,6 +88,10 @@ def _make_gen_fn(model_name: str, model, device: torch.device) -> GeneratorFn:
     if model_name == "cyclegan":
         return lambda c: model(c)
 
+    if model_name == "cyclegan-joint":
+        # Returns raw logits; callers that need probabilities must apply masked_softmax
+        return lambda c: model(c)
+
     raise ValueError(f"Unknown model: {model_name}")
 
 
@@ -94,7 +106,7 @@ def _decode_condition(ci: torch.Tensor) -> tuple[str, str, str, str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate a trained date-generator model")
-    parser.add_argument("--model",      choices=["gan", "vae", "cgan", "cyclegan"], required=True)
+    parser.add_argument("--model",      choices=["gan", "vae", "cgan", "cyclegan", "cyclegan-joint"], required=True)
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--data",       default="data/data.txt",          help="Full dataset for test-set CSR")
     parser.add_argument("--input",      default="data/example_input.txt", help="Conditions file to generate from")
@@ -112,11 +124,18 @@ def main() -> None:
     gen_fn = _make_gen_fn(args.model, model, device)
 
     # ── Test-set CSR ─────────────────────────────────────────────────────────
-    _, _, test_loader = make_loaders(args.data, batch_size=256, seed=args.seed)
-    csr = evaluate_csr(gen_fn, test_loader, device, constrained=args.constrained)
+    is_joint = args.model == "cyclegan-joint"
 
-    mode = "constrained" if args.constrained else "unconstrained"
-    print(f"\n=== Test-Set Condition Satisfaction Rates ({mode}) ===")
+    if is_joint:
+        _, _, test_loader = make_loaders_joint(args.data, batch_size=256, seed=args.seed)
+        csr = evaluate_csr_joint(gen_fn, test_loader, device)
+        print("\n=== Test-Set Condition Satisfaction Rates (joint softmax) ===")
+    else:
+        _, _, test_loader = make_loaders(args.data, batch_size=256, seed=args.seed)
+        csr = evaluate_csr(gen_fn, test_loader, device, constrained=args.constrained)
+        mode = "constrained" if args.constrained else "unconstrained"
+        print(f"\n=== Test-Set Condition Satisfaction Rates ({mode}) ===")
+
     for k, v in csr.items():
         print(f"  {k:<8} {v*100:6.2f}%")
 
@@ -131,9 +150,16 @@ def main() -> None:
         day, month, leap, decade = parse_conditions(line)
         cond_t = encode_conditions(day, month, leap, decade).unsqueeze(0).to(device)
         with torch.no_grad():
-            date_t = gen_fn(cond_t)
-        decode_fn = constrained_decode if args.constrained else decode_date
-        date_str  = decode_fn(cond_t[0].cpu(), date_t[0].cpu())
+            if is_joint:
+                from src.models.cyclegan_joint import masked_softmax
+                logits  = gen_fn(cond_t)
+                mask    = build_calendar_mask(cond_t[0].cpu()).unsqueeze(0).to(device)
+                probs   = masked_softmax(logits, mask)
+                date_str = decode_joint(cond_t[0].cpu(), probs[0].cpu())
+            else:
+                date_t   = gen_fn(cond_t)
+                decode_fn = constrained_decode if args.constrained else decode_date
+                date_str  = decode_fn(cond_t[0].cpu(), date_t[0].cpu())
         results.append(date_str)
         print(f"  {line}  ->  {date_str}")
 

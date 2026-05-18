@@ -17,7 +17,7 @@ import torch
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train a date-generator model")
-    p.add_argument("--model",        choices=["gan", "vae", "cgan", "cyclegan"], required=True)
+    p.add_argument("--model",        choices=["gan", "vae", "cgan", "cyclegan", "cyclegan-joint"], required=True)
     p.add_argument("--data",         default="data/data.txt",   help="Path to data.txt")
     p.add_argument("--epochs",       type=int,   default=200)
     p.add_argument("--batch-size",   type=int,   default=128)
@@ -30,6 +30,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--lambda-fm",    type=float, default=10.0,  help="Feature-matching weight")
     # CycleGAN-specific
     p.add_argument("--lambda-cycle", type=float, default=10.0,  help="Cycle-consistency weight")
+    # CycleGAN-Joint-specific
+    p.add_argument("--lambda-recon", type=float, default=5.0,   help="Soft-label reconstruction weight (cyclegan-joint)")
     return p.parse_args()
 
 
@@ -62,6 +64,10 @@ def main() -> None:
     elif args.model == "cyclegan":
         from src.training.train_cyclegan import train_cyclegan
         train_cyclegan(**kwargs, lambda_cycle=args.lambda_cycle)
+
+    elif args.model == "cyclegan-joint":
+        from src.training.train_cyclegan_joint import train_cyclegan_joint
+        train_cyclegan_joint(**kwargs, lambda_cycle=args.lambda_cycle, lambda_recon=args.lambda_recon)
 
 
 if __name__ == "__main__":
