@@ -148,6 +148,106 @@ def parse_data_line(line: str) -> Tuple[str, str, str, str, str]:
     )
 
 
+# ── Joint softmax constants (310-dim date space) ──────────────────────────────
+JOINT_DIM = DAY_OF_MONTH_DIM * YEAR_IN_DECADE_DIM  # 31 * 10 = 310
+
+
+def pair_to_index(dom_idx: int, yid: int) -> int:
+    """Map (day-of-month index, year-in-decade) → flat index in [0, 310)."""
+    return dom_idx * YEAR_IN_DECADE_DIM + yid
+
+
+def index_to_pair(idx: int) -> Tuple[int, int]:
+    """Map flat index back to (dom_idx, yid)."""
+    return idx // YEAR_IN_DECADE_DIM, idx % YEAR_IN_DECADE_DIM
+
+
+def encode_date_joint(day_of_month: int, year: int) -> torch.Tensor:
+    """One-hot encode a specific date in 310-dim joint (dom × yid) space."""
+    dom_idx = day_of_month - 1
+    yid     = year % 10
+    vec     = torch.zeros(JOINT_DIM, dtype=torch.float32)
+    vec[pair_to_index(dom_idx, yid)] = 1.0
+    return vec
+
+
+def build_calendar_mask(cond: torch.Tensor) -> torch.Tensor:
+    """Return a 310-dim boolean mask.
+
+    True  → (dom, yid) pair is a calendar-valid date with the correct leap status.
+    False → impossible date (e.g. Feb 30) or wrong leap year.
+
+    The weekday condition is deliberately NOT masked here; the model must learn
+    the weekday constraint from the soft-label targets.
+    """
+    month     = int(cond[_DAY_END:_MONTH_END].argmax().item()) + 1
+    leap_flag = int(cond[_MONTH_END:_LEAP_END].argmax().item()) == 1
+    decade    = int(cond[_LEAP_END:].argmax().item()) + DECADE_MIN
+
+    mask = torch.zeros(JOINT_DIM, dtype=torch.bool)
+    for yid in range(YEAR_IN_DECADE_DIM):
+        year = decade * 10 + yid
+        if is_leap_year(year) != leap_flag:
+            continue
+        for dom in range(DAY_OF_MONTH_DIM):
+            try:
+                date(year, month, dom + 1)
+                mask[pair_to_index(dom, yid)] = True
+            except ValueError:
+                pass
+    return mask
+
+
+def build_soft_label(cond: torch.Tensor) -> torch.Tensor:
+    """Return a 310-dim uniform soft-label over all valid (dom, yid) pairs.
+
+    A pair is valid when it produces a real calendar date that satisfies ALL
+    four conditions: correct month (from cond), correct leap status, correct
+    decade, AND the correct day-of-week.  The result is normalised to sum=1.
+
+    If no valid pair exists (edge case) the returned tensor is all-zeros.
+    """
+    target_weekday = int(cond[:_DAY_END].argmax().item())
+    month          = int(cond[_DAY_END:_MONTH_END].argmax().item()) + 1
+    leap_flag      = int(cond[_MONTH_END:_LEAP_END].argmax().item()) == 1
+    decade         = int(cond[_LEAP_END:].argmax().item()) + DECADE_MIN
+
+    soft = torch.zeros(JOINT_DIM, dtype=torch.float32)
+    for yid in range(YEAR_IN_DECADE_DIM):
+        year = decade * 10 + yid
+        if is_leap_year(year) != leap_flag:
+            continue
+        for dom in range(DAY_OF_MONTH_DIM):
+            day_of_month = dom + 1
+            try:
+                d = date(year, month, day_of_month)
+            except ValueError:
+                continue
+            if d.weekday() == target_weekday:
+                soft[pair_to_index(dom, yid)] = 1.0
+
+    total = soft.sum()
+    if total > 0:
+        soft /= total
+    return soft
+
+
+def decode_joint(cond: torch.Tensor, joint_vec: torch.Tensor) -> str:
+    """Reconstruct a 'dd-mm-yyyy' string from condition + 310-dim joint vector.
+
+    Takes the argmax of joint_vec, maps it back to (dom_idx, yid), and
+    combines with month and decade from the condition tensor.
+    """
+    month  = int(cond[_DAY_END:_MONTH_END].argmax().item()) + 1
+    decade = int(cond[_LEAP_END:].argmax().item()) + DECADE_MIN
+
+    best_idx     = int(joint_vec.argmax().item())
+    dom_idx, yid = index_to_pair(best_idx)
+    day_of_month = dom_idx + 1
+    year         = decade * 10 + yid
+    return f"{day_of_month:02d}-{month:02d}-{year:04d}"
+
+
 def check_conditions(
     date_str: str,
     day: str,
